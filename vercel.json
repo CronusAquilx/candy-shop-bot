@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "api/**/*.js", "use": "@vercel/node" }
+  ],
+  "routes": [
+    { "src": "/api/discord-interactions", "dest": "/api/discord-interactions.js" },
+    { "src": "/api/cron", "dest": "/api/cron.js" }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 11 * * 1"
+    }
+  ]
+}
