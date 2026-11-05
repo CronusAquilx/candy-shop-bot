@@ -1,0 +1,15 @@
+{
+  "name": "candy-shop-bot",
+  "version": "1.0.0",
+  "description": "Candy Shop crafting & payout Discord bot (serverless on Vercel)",
+  "type": "module",
+  "scripts": {
+    "register": "node scripts/register-commands.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "discord-interactions": "^4.1.0",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
+  }
+}
