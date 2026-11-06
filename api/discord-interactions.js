@@ -11,7 +11,7 @@ import {
   getAllWeeklyTotals,
   formatMoney,
 } from '../lib/helpers.js';
-import { getWeekStart, getPreviousWeekStart } from '../lib/week.js';
+import { getWeekStart } from '../lib/week.js';
 
 const selectedItems = new Map();
 
@@ -20,28 +20,35 @@ export default async function handler(req, res) {
     return res.status(405).send('Method not allowed');
   }
 
-  const signature = req.headers['x-signature-ed25519'];
-  const timestamp = req.headers['x-signature-timestamp'];
-  const body = JSON.stringify(req.body);
-
-  const isValid = verifyKey(
-    body,
-    signature,
-    timestamp,
-    process.env.DISCORD_PUBLIC_KEY
-  );
-
-  if (!isValid) {
-    return res.status(401).send('Invalid request signature');
-  }
-
-  const interaction = req.body;
-
-  if (interaction.type === InteractionType.PING) {
-    return res.status(200).json({ type: InteractionResponseType.PONG });
-  }
-
   try {
+    const signature = req.headers['x-signature-ed25519'];
+    const timestamp = req.headers['x-signature-timestamp'];
+
+    // On Vercel the body is already parsed. We still need a stable string for verification.
+    // Discord signs the exact raw body, so we reconstruct carefully.
+    const rawBody = typeof req.body === 'string'
+      ? req.body
+      : JSON.stringify(req.body);
+
+    const isValid = verifyKey(
+      rawBody,
+      signature,
+      timestamp,
+      process.env.DISCORD_PUBLIC_KEY
+    );
+
+    if (!isValid) {
+      console.error('Invalid Discord signature');
+      return res.status(401).send('Invalid request signature');
+    }
+
+    const interaction = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+
+    // Discord ping verification
+    if (interaction.type === InteractionType.PING) {
+      return res.status(200).json({ type: InteractionResponseType.PONG });
+    }
+
     // APPLICATION COMMAND
     if (interaction.type === InteractionType.APPLICATION_COMMAND) {
       const { name, options } = interaction.data;
@@ -413,7 +420,7 @@ export default async function handler(req, res) {
       data: { content: 'Unhandled interaction.', flags: 64 },
     });
   } catch (err) {
-    console.error(err);
+    console.error('Handler error:', err);
     return res.status(200).json({
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: { content: 'Something went wrong.', flags: 64 },
