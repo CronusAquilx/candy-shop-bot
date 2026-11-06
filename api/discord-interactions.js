@@ -15,6 +15,19 @@ import { getWeekStart } from '../lib/week.js';
 
 const selectedItems = new Map();
 
+// Critical for Discord signature verification on Vercel
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+async function readRaw(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).send('Method not allowed');
@@ -23,12 +36,7 @@ export default async function handler(req, res) {
   try {
     const signature = req.headers['x-signature-ed25519'];
     const timestamp = req.headers['x-signature-timestamp'];
-
-    // On Vercel the body is already parsed. We still need a stable string for verification.
-    // Discord signs the exact raw body, so we reconstruct carefully.
-    const rawBody = typeof req.body === 'string'
-      ? req.body
-      : JSON.stringify(req.body);
+    const rawBody = await readRaw(req);
 
     const isValid = verifyKey(
       rawBody,
@@ -42,9 +50,9 @@ export default async function handler(req, res) {
       return res.status(401).send('Invalid request signature');
     }
 
-    const interaction = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    const interaction = JSON.parse(rawBody);
 
-    // Discord ping verification
+    // Discord ping verification — must return type 1 (PONG)
     if (interaction.type === InteractionType.PING) {
       return res.status(200).json({ type: InteractionResponseType.PONG });
     }
