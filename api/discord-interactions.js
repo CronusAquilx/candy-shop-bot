@@ -355,13 +355,6 @@ export default async function handler(req, res) {
         if (!(await canAdmin(interaction))) {
           return res.status(200).json({ type: 4, data: { content: 'No permission.', flags: 64 } });
         }
-        const cfg = await getOrCreateGuildConfig(guildId);
-        if (!cfg.logs_channel_id) {
-          return res.status(200).json({
-            type: 4,
-            data: { content: 'Set a logs channel first (**Set Logs Channel**), then run the pay check.', flags: 64 },
-          });
-        }
         // Reply right away (Discord needs an answer in 3s), finish posting in the background
         waitUntil(
           runPayCheck(guildId, getWeekStart(), { note: ' (manual run, week so far)' })
@@ -369,7 +362,7 @@ export default async function handler(req, res) {
         );
         return res.status(200).json({
           type: 4,
-          data: { content: `Pay check running. Results are being posted in <#${cfg.logs_channel_id}>.`, flags: 64 },
+          data: { content: 'Pay check running. Each person\'s result is being sent to their own sales channel.', flags: 64 },
         });
       }
 
