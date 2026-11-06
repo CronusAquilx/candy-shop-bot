@@ -308,6 +308,12 @@ export default async function handler(req, res) {
                 label: 'How many did you craft?',
                 component: { type: 4, custom_id: 'quantity', style: 1, required: true, placeholder: 'e.g. 25' },
               },
+              {
+                type: 18,
+                label: 'Screenshots (1-3)',
+                description: 'Upload 1 to 3 screenshots of what you crafted',
+                component: { type: 19, custom_id: 'shots', min_values: 1, max_values: 3, required: true },
+              },
             ],
           },
         });
@@ -440,6 +446,14 @@ export default async function handler(req, res) {
         return null;
       };
 
+      const getValues = (id) => {
+        for (const row of fields) {
+          const cs = row.component ? [row.component] : (row.components || []);
+          for (const c of cs) if (c.custom_id === id) return c.values || [];
+        }
+        return [];
+      };
+
       if (customId === 'modal_emp_pick' || customId === 'modal_logs_pick') {
         if (!(await canAdmin(interaction))) {
           return res.status(200).json({ type: 4, data: { content: 'No permission.', flags: 64 } });
@@ -481,19 +495,35 @@ export default async function handler(req, res) {
         });
         const newTotal = await getEmployeeWeeklyTotal(guildId, userId, weekStart);
         const cfg = await getOrCreateGuildConfig(guildId);
-        if (cfg.logs_channel_id) {
-          discordPost(cfg.logs_channel_id, {
-            embeds: [{
-              color: 0xFF69B4,
-              description: `<@${userId}> logged **${quantity}x ${item.name}** — weekly total **${newTotal}**`,
-              timestamp: new Date().toISOString(),
-            }],
-            allowed_mentions: { parse: [] },
-          }).catch(e => console.error('log post failed', e.message));
-        }
+        const { data: emp } = await supabase
+          .from('employees')
+          .select('sales_channel_id')
+          .eq('guild_id', guildId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        const resolved = interaction.data.resolved?.attachments || {};
+        const shots = getValues('shots').map(id => resolved[id]).filter(Boolean).slice(0, 3);
+
+        // Post to their sales channel (and the logs channel) after replying, Discord needs an answer in 3s
+        waitUntil(
+          announceLog({
+            userId,
+            item,
+            quantity,
+            total: newTotal,
+            quota: cfg.quota_amount || 600,
+            channelId: emp?.sales_channel_id || interaction.channel_id,
+            logsChannelId: cfg.logs_channel_id,
+            shots,
+          }).catch(e => console.error('announce failed', e.message))
+        );
+
         return res.status(200).json({
           type: 4,
-          data: { content: `Logged **${quantity}x ${item.name}**. Your weekly total is now **${newTotal}**.`, flags: 64 },
+          data: {
+            content: `Logged **${quantity}x ${item.name}**. Your total is now **${newTotal}**. Posting it to your sales channel.`,
+            flags: 64,
+          },
         });
       }
 
@@ -754,4 +784,62 @@ async function ensureDefaultItems(guildId) {
     DEFAULT_ITEMS.map(i => ({ guild_id: guildId, name: i.name, emoji: i.emoji, active: true })),
     { onConflict: 'guild_id,name' }
   );
+}
+
+async function announceLog({ userId, item, quantity, total, quota, channelId, logsChannelId, shots }) {
+  const left = quota - total;
+  const progress = left <= 0
+    ? `✅ Quota reached! (**${total}/${quota}**)`
+    : `**${left}** more to reach quota (**${total}/${quota}**)`;
+  const embed = {
+    title: '🍬 Crafting Logged',
+    color: 0xFF69B4,
+    description: `<@${userId}> crafted **${quantity}x ${item.emoji && !item.emoji.startsWith('<') ? item.emoji + ' ' : ''}${item.name}**`,
+    fields: [{ name: 'Progress', value: progress }],
+    footer: { text: 'Click below to log more' },
+    timestamp: new Date().toISOString(),
+  };
+  const components = [{
+    type: 1,
+    components: [
+      { type: 2, custom_id: `logpanel_open_${userId}`, label: 'Log Items Again', style: 3, emoji: { name: '🍬' } },
+    ],
+  }];
+
+  // Re-upload the screenshots so they stay visible (Discord's upload links expire)
+  const files = [];
+  const failed = [];
+  for (const [i, a] of shots.entries()) {
+    try {
+      const r = await fetch(a.url);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      files.push({ name: `screenshot${i + 1}-${a.filename || 'image.png'}`, blob: await r.blob() });
+    } catch (e) {
+      console.error('screenshot download failed', e.message);
+      failed.push(a.url);
+    }
+  }
+  if (failed.length) embed.fields.push({ name: 'Screenshots', value: failed.join('\n') });
+
+  const payload = { embeds: [embed], components, allowed_mentions: { parse: [] } };
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify(payload));
+  files.forEach((f, i) => form.append(`files[${i}]`, f.blob, f.name));
+  const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bot ${process.env.DISCORD_TOKEN}` },
+    body: form,
+  });
+  if (!r.ok) throw new Error(`Discord ${r.status}: ${await r.text()}`);
+
+  if (logsChannelId && logsChannelId !== channelId) {
+    await discordPost(logsChannelId, {
+      embeds: [{
+        color: 0xFF69B4,
+        description: `<@${userId}> logged **${quantity}x ${item.name}** — total **${total}/${quota}**`,
+        timestamp: new Date().toISOString(),
+      }],
+      allowed_mentions: { parse: [] },
+    }).catch(e => console.error('logs post failed', e.message));
+  }
 }
