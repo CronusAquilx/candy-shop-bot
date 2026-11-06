@@ -1,8 +1,4 @@
-import {
-  InteractionType,
-  InteractionResponseType,
-  verifyKey,
-} from 'discord-interactions';
+import crypto from 'node:crypto';
 import { supabase } from '../lib/supabase.js';
 import {
   getOrCreateGuildConfig,
@@ -15,7 +11,7 @@ import { getWeekStart } from '../lib/week.js';
 
 const selectedItems = new Map();
 
-// Critical for Discord signature verification on Vercel
+// Required so we can read the exact bytes Discord signed
 export const config = {
   api: {
     bodyParser: false,
@@ -28,6 +24,27 @@ async function readRaw(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+async function verifyDiscord(raw, sig, ts) {
+  if (!sig || !ts) return false;
+  try {
+    const pub = process.env.DISCORD_PUBLIC_KEY;
+    if (!pub) {
+      console.error('Missing DISCORD_PUBLIC_KEY');
+      return false;
+    }
+    // Same method as working HelpBet bot
+    const der = Buffer.concat([
+      Buffer.from('302a300506032b6570032100', 'hex'),
+      Buffer.from(pub, 'hex'),
+    ]);
+    const key = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(ts + raw), key, Buffer.from(sig, 'hex'));
+  } catch (e) {
+    console.error('verifyDiscord error', e);
+    return false;
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).send('Method not allowed');
@@ -38,13 +55,7 @@ export default async function handler(req, res) {
     const timestamp = req.headers['x-signature-timestamp'];
     const rawBody = await readRaw(req);
 
-    const isValid = verifyKey(
-      rawBody,
-      signature,
-      timestamp,
-      process.env.DISCORD_PUBLIC_KEY
-    );
-
+    const isValid = await verifyDiscord(rawBody, signature, timestamp);
     if (!isValid) {
       console.error('Invalid Discord signature');
       return res.status(401).send('Invalid request signature');
@@ -52,13 +63,13 @@ export default async function handler(req, res) {
 
     const interaction = JSON.parse(rawBody);
 
-    // Discord ping verification — must return type 1 (PONG)
-    if (interaction.type === InteractionType.PING) {
-      return res.status(200).json({ type: InteractionResponseType.PONG });
+    // Discord endpoint verification ping
+    if (interaction.type === 1) {
+      return res.status(200).json({ type: 1 }); // PONG
     }
 
     // APPLICATION COMMAND
-    if (interaction.type === InteractionType.APPLICATION_COMMAND) {
+    if (interaction.type === 2) {
       const { name, options } = interaction.data;
       const guildId = interaction.guild_id;
       const memberRoles = interaction.member?.roles || [];
@@ -67,7 +78,7 @@ export default async function handler(req, res) {
         const sub = options?.[0]?.name;
         if (!(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'No permission.', flags: 64 },
           });
         }
@@ -75,7 +86,7 @@ export default async function handler(req, res) {
         if (sub === 'admin-panel') {
           const panel = await buildAdminPanel(guildId);
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: panel,
           });
         }
@@ -85,7 +96,7 @@ export default async function handler(req, res) {
           const channelId = channelOpt?.value;
           if (!channelId) {
             return res.status(200).json({
-              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              type: 4,
               data: { content: 'Please provide a channel.', flags: 64 },
             });
           }
@@ -95,7 +106,7 @@ export default async function handler(req, res) {
             .eq('guild_id', guildId);
 
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: `Logs channel set to <#${channelId}>`, flags: 64 },
           });
         }
@@ -111,7 +122,7 @@ export default async function handler(req, res) {
             .eq('guild_id', guildId);
 
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: {
               content: `Admin roles updated: ${roles.map(id => `<@&${id}>`).join(', ')}`,
               flags: 64,
@@ -123,7 +134,7 @@ export default async function handler(req, res) {
       if (name === 'items') {
         if (!(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'No permission.', flags: 64 },
           });
         }
@@ -142,7 +153,7 @@ export default async function handler(req, res) {
           );
 
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: `Added **${emoji} ${itemName}**`, flags: 64 },
           });
         }
@@ -156,14 +167,14 @@ export default async function handler(req, res) {
 
           if (!data?.length) {
             return res.status(200).json({
-              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+              type: 4,
               data: { content: 'No items yet. Use `/items add`', flags: 64 },
             });
           }
 
           const lines = data.map(i => `${i.active ? '✅' : '❌'} ${i.emoji || '🍹'} ${i.name}`);
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: lines.join('\n'), flags: 64 },
           });
         }
@@ -177,15 +188,15 @@ export default async function handler(req, res) {
             .eq('name', nameOpt.value);
 
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: `Deactivated **${nameOpt.value}**`, flags: 64 },
           });
         }
       }
     }
 
-    // MESSAGE COMPONENTS
-    if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
+    // MESSAGE COMPONENTS (type 3)
+    if (interaction.type === 3) {
       const customId = interaction.data.custom_id;
       const guildId = interaction.guild_id;
       const userId = interaction.member?.user?.id || interaction.user?.id;
@@ -194,13 +205,13 @@ export default async function handler(req, res) {
       if (customId === 'admin_refresh') {
         if (!(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'No permission.', flags: 64 },
           });
         }
         const panel = await buildAdminPanel(guildId);
         return res.status(200).json({
-          type: InteractionResponseType.UPDATE_MESSAGE,
+          type: 7, // UPDATE_MESSAGE
           data: panel,
         });
       }
@@ -208,12 +219,12 @@ export default async function handler(req, res) {
       if (customId === 'admin_set_employee') {
         if (!(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'No permission.', flags: 64 },
           });
         }
         return res.status(200).json({
-          type: InteractionResponseType.MODAL,
+          type: 9, // MODAL
           data: {
             custom_id: 'modal_set_employee',
             title: 'Set Employee Sales Channel',
@@ -246,12 +257,12 @@ export default async function handler(req, res) {
       if (customId === 'admin_pay_all') {
         if (!(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'No permission.', flags: 64 },
           });
         }
         return res.status(200).json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          type: 4,
           data: {
             content: 'Pay check started. Results will appear in sales channels / logs.',
             flags: 64,
@@ -263,7 +274,7 @@ export default async function handler(req, res) {
         const targetUser = customId.replace('log_select_item_', '');
         if (userId !== targetUser) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'This is not your panel.', flags: 64 },
           });
         }
@@ -271,7 +282,7 @@ export default async function handler(req, res) {
         selectedItems.set(userId, itemId);
 
         return res.status(200).json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          type: 4,
           data: {
             content: 'Selected item. Now click **Log Amount**.',
             flags: 64,
@@ -283,20 +294,20 @@ export default async function handler(req, res) {
         const targetUser = customId.replace('log_open_modal_', '');
         if (userId !== targetUser) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'This is not your panel.', flags: 64 },
           });
         }
         const selected = selectedItems.get(userId);
         if (!selected) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'Select an item first.', flags: 64 },
           });
         }
 
         return res.status(200).json({
-          type: InteractionResponseType.MODAL,
+          type: 9,
           data: {
             custom_id: `modal_log_amount_${userId}_${selected}`,
             title: 'Log Crafted Amount',
@@ -316,8 +327,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // MODAL SUBMIT
-    if (interaction.type === InteractionType.MODAL_SUBMIT) {
+    // MODAL SUBMIT (type 5)
+    if (interaction.type === 5) {
       const customId = interaction.data.custom_id;
       const guildId = interaction.guild_id;
       const userId = interaction.member?.user?.id || interaction.user?.id;
@@ -338,7 +349,7 @@ export default async function handler(req, res) {
         const match = userInput.match(/\d{17,20}/);
         if (!match) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'Invalid user ID.', flags: 64 },
           });
         }
@@ -356,7 +367,7 @@ export default async function handler(req, res) {
         );
 
         return res.status(200).json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          type: 4,
           data: {
             content: salesChannelId
               ? `Employee <@${targetUserId}> linked to <#${salesChannelId}>.`
@@ -373,7 +384,7 @@ export default async function handler(req, res) {
 
         if (userId !== targetUser) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'Not your log.', flags: 64 },
           });
         }
@@ -381,7 +392,7 @@ export default async function handler(req, res) {
         const quantity = parseInt(getField('quantity'), 10);
         if (isNaN(quantity) || quantity < 1) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'Invalid quantity.', flags: 64 },
           });
         }
@@ -395,7 +406,7 @@ export default async function handler(req, res) {
 
         if (!item) {
           return res.status(200).json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            type: 4,
             data: { content: 'Item not found.', flags: 64 },
           });
         }
@@ -414,7 +425,7 @@ export default async function handler(req, res) {
         selectedItems.delete(userId);
 
         return res.status(200).json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          type: 4,
           data: {
             content: `Logged **${quantity}x ${item.name}**. Your weekly total is now **${newTotal}**.`,
             flags: 64,
@@ -424,13 +435,13 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({
-      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      type: 4,
       data: { content: 'Unhandled interaction.', flags: 64 },
     });
   } catch (err) {
     console.error('Handler error:', err);
     return res.status(200).json({
-      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      type: 4,
       data: { content: 'Something went wrong.', flags: 64 },
     });
   }
