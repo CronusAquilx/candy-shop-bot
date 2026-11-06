@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase.js';
-import { getPreviousWeekStart } from '../lib/week.js';
+import { getWeekStart } from '../lib/week.js';
 import { runPayCheck } from '../lib/pay.js';
 
 export default async function handler(req, res) {
@@ -13,8 +13,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, message: 'Not Monday, skipped' });
   }
 
-  // Pays last week; a new week starts fresh automatically (logs are stored per week)
-  const weekStart = getPreviousWeekStart();
+  // Pays everything logged and unpaid so far; totals reset as soon as it's paid
+  const weekStart = getWeekStart();
   const { data: guilds } = await supabase.from('guild_config').select('guild_id');
   const results = [];
 

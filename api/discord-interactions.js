@@ -357,7 +357,7 @@ export default async function handler(req, res) {
         }
         // Reply right away (Discord needs an answer in 3s), finish posting in the background
         waitUntil(
-          runPayCheck(guildId, getWeekStart(), { note: ' (manual run, week so far)' })
+          runPayCheck(guildId, getWeekStart(), { note: ' (manual run)' })
             .catch(e => console.error('manual pay check failed', e.message))
         );
         return res.status(200).json({
