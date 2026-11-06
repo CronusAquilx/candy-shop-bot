@@ -1,0 +1,81 @@
+import { REST, Routes } from 'discord.js';
+import 'dotenv/config';
+
+const commands = [
+  {
+    name: 'setup',
+    description: 'Set up the Candy Shop bot',
+    options: [
+      {
+        name: 'admin-panel',
+        description: 'Post the Admin Panel',
+        type: 1,
+      },
+      {
+        name: 'logs-channel',
+        description: 'Set the Logs channel',
+        type: 1,
+        options: [
+          {
+            name: 'channel',
+            description: 'The channel to use for logs',
+            type: 7,
+            required: true,
+            channel_types: [0],
+          },
+        ],
+      },
+      {
+        name: 'admin-roles',
+        description: 'Set which roles can use admin features',
+        type: 1,
+        options: [
+          { name: 'role1', description: 'Admin role', type: 8, required: true },
+          { name: 'role2', description: 'Additional role', type: 8, required: false },
+          { name: 'role3', description: 'Additional role', type: 8, required: false },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'items',
+    description: 'Manage craftable items',
+    options: [
+      {
+        name: 'add',
+        description: 'Add a craftable item',
+        type: 1,
+        options: [
+          { name: 'name', description: 'Item name', type: 3, required: true },
+          { name: 'emoji', description: 'Emoji', type: 3, required: false },
+        ],
+      },
+      {
+        name: 'list',
+        description: 'List all items',
+        type: 1,
+      },
+      {
+        name: 'remove',
+        description: 'Deactivate an item',
+        type: 1,
+        options: [
+          { name: 'name', description: 'Item name', type: 3, required: true },
+        ],
+      },
+    ],
+  },
+];
+
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+try {
+  console.log('Registering commands...');
+  await rest.put(
+    Routes.applicationCommands(process.env.DISCORD_CLIENT_ID),
+    { body: commands }
+  );
+  console.log('Done.');
+} catch (err) {
+  console.error(err);
+}
