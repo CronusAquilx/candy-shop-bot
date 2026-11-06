@@ -76,7 +76,11 @@ export default async function handler(req, res) {
 
       if (name === 'setup') {
         const sub = options?.[0]?.name;
-        if (!(await isAdmin(memberRoles, guildId))) {
+        // Server owners/admins can always run /setup, so a fresh server isn't locked out
+        const perms = BigInt(interaction.member?.permissions || '0');
+        const hasServerPerms = (perms & 0x8n) !== 0n || (perms & 0x20n) !== 0n; // Administrator | Manage Server
+        await getOrCreateGuildConfig(guildId); // make sure the config row exists
+        if (!hasServerPerms && !(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
             type: 4,
             data: { content: 'No permission.', flags: 64 },
