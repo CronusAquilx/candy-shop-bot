@@ -1,11 +1,11 @@
 {
-  "version": 2,
-  "builds": [
-    { "src": "api/**/*.js", "use": "@vercel/node" }
-  ],
-  "routes": [
-    { "src": "/api/discord-interactions", "dest": "/api/discord-interactions.js" },
-    { "src": "/api/cron", "dest": "/api/cron.js" }
+  "functions": {
+    "api/discord-interactions.js": { "maxDuration": 30 },
+    "api/cron.js": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    { "source": "/api/discord-interactions", "destination": "/api/discord-interactions" },
+    { "source": "/api/cron", "destination": "/api/cron" }
   ],
   "crons": [
     {
