@@ -67,15 +67,22 @@ const commands = [
   },
 ];
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+const token = process.env.DISCORD_TOKEN;
+const clientId = process.env.DISCORD_CLIENT_ID;
+
+if (!token || !clientId) {
+  console.warn('Skipping command registration: DISCORD_TOKEN or DISCORD_CLIENT_ID missing.');
+  process.exit(0);
+}
+
+const rest = new REST({ version: '10' }).setToken(token);
 
 try {
   console.log('Registering commands...');
-  await rest.put(
-    Routes.applicationCommands(process.env.DISCORD_CLIENT_ID),
-    { body: commands }
-  );
-  console.log('Done.');
+  const res = await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  console.log(`Registered ${res.length} global commands: ${res.map(c => '/' + c.name).join(', ')}`);
 } catch (err) {
-  console.error(err);
+  // Never fail the deploy because of registration
+  console.error('Command registration failed:', err?.message || err);
 }
+process.exit(0);

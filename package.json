@@ -4,7 +4,8 @@
   "description": "Candy Shop crafting & payout Discord bot (serverless on Vercel)",
   "type": "module",
   "scripts": {
-    "register": "node scripts/register-commands.js"
+    "register": "node scripts/register-commands.js",
+    "vercel-build": "node scripts/register-commands.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
