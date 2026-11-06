@@ -164,6 +164,7 @@ export default async function handler(req, res) {
         }
 
         if (sub === 'list') {
+          await ensureDefaultItems(guildId);
           const { data } = await supabase
             .from('craftable_items')
             .select('name, emoji, active')
@@ -266,6 +267,7 @@ export default async function handler(req, res) {
         if (userId !== target) {
           return res.status(200).json({ type: 4, data: { content: 'This is not your panel.', flags: 64 } });
         }
+        await ensureDefaultItems(guildId);
         const { data: items } = await supabase
           .from('craftable_items')
           .select('id, name, emoji')
@@ -698,6 +700,7 @@ function buildLogPanel(userId) {
 async function linkEmployee(guildId, userId, channelId) {
   if (!userId || !channelId) return 'Pick both a user and a channel.';
   await getOrCreateGuildConfig(guildId);
+  await ensureDefaultItems(guildId);
   await supabase.from('employees').upsert(
     { guild_id: guildId, user_id: userId, sales_channel_id: channelId, active: true },
     { onConflict: 'guild_id,user_id' }
@@ -714,6 +717,7 @@ async function linkEmployee(guildId, userId, channelId) {
 async function setLogsChannel(guildId, channelId) {
   if (!channelId) return 'Pick a channel.';
   await getOrCreateGuildConfig(guildId);
+  await ensureDefaultItems(guildId);
   await supabase
     .from('guild_config')
     .update({ logs_channel_id: channelId, updated_at: new Date().toISOString() })
@@ -725,4 +729,28 @@ async function setLogsChannel(guildId, channelId) {
     console.error('panel post failed', e.message);
     return `Logs channel set to <#${channelId}>, but I couldn't post the panel. Give the bot View Channel, Send Messages and Embed Links there, then set it again.`;
   }
+}
+
+const DEFAULT_ITEMS = [
+  { name: 'Phoenix BJ Shot', emoji: '🥃' },
+  { name: 'Bricked Up Shot', emoji: '🥃' },
+  { name: 'Lus Naughty N…', emoji: '🍹' },
+  { name: 'Midnight Hazy…', emoji: '🍹' },
+  { name: 'Strawberry C…', emoji: '🍹' },
+  { name: 'Cinnamon Myx…', emoji: '🍹' },
+  { name: 'Cowbell Crun…', emoji: '🍹' },
+  { name: 'Boxes', emoji: '📦' },
+];
+
+// Adds the default Candy Shop items the first time a server has none
+async function ensureDefaultItems(guildId) {
+  const { count } = await supabase
+    .from('craftable_items')
+    .select('id', { count: 'exact', head: true })
+    .eq('guild_id', guildId);
+  if (count > 0) return;
+  await supabase.from('craftable_items').upsert(
+    DEFAULT_ITEMS.map(i => ({ guild_id: guildId, name: i.name, emoji: i.emoji, active: true })),
+    { onConflict: 'guild_id,name' }
+  );
 }
