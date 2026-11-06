@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { waitUntil } from '@vercel/functions';
+import { runPayCheck } from '../lib/pay.js';
 import { supabase } from '../lib/supabase.js';
 import {
   getOrCreateGuildConfig,
@@ -350,18 +352,24 @@ export default async function handler(req, res) {
       }
 
       if (customId === 'admin_pay_all') {
-        if (!(await isAdmin(memberRoles, guildId))) {
+        if (!(await canAdmin(interaction))) {
+          return res.status(200).json({ type: 4, data: { content: 'No permission.', flags: 64 } });
+        }
+        const cfg = await getOrCreateGuildConfig(guildId);
+        if (!cfg.logs_channel_id) {
           return res.status(200).json({
             type: 4,
-            data: { content: 'No permission.', flags: 64 },
+            data: { content: 'Set a logs channel first (**Set Logs Channel**), then run the pay check.', flags: 64 },
           });
         }
+        // Reply right away (Discord needs an answer in 3s), finish posting in the background
+        waitUntil(
+          runPayCheck(guildId, getWeekStart(), { note: ' (manual run, week so far)' })
+            .catch(e => console.error('manual pay check failed', e.message))
+        );
         return res.status(200).json({
           type: 4,
-          data: {
-            content: 'Pay check started. Results will appear in sales channels / logs.',
-            flags: 64,
-          },
+          data: { content: `Pay check running. Results are being posted in <#${cfg.logs_channel_id}>.`, flags: 64 },
         });
       }
 
