@@ -26,6 +26,15 @@ const commands = [
         ],
       },
       {
+        name: 'employee',
+        description: 'Link an employee to their sales channel and send them the logging panel',
+        type: 1,
+        options: [
+          { name: 'user', description: 'The employee', type: 6, required: true },
+          { name: 'channel', description: 'Their sales channel', type: 7, required: true, channel_types: [0] },
+        ],
+      },
+      {
         name: 'admin-roles',
         description: 'Set which roles can use admin features',
         type: 1,

@@ -104,15 +104,16 @@ export default async function handler(req, res) {
               data: { content: 'Please provide a channel.', flags: 64 },
             });
           }
-          await supabase
-            .from('guild_config')
-            .update({ logs_channel_id: channelId, updated_at: new Date().toISOString() })
-            .eq('guild_id', guildId);
+          const msg = await setLogsChannel(guildId, channelId);
+          return res.status(200).json({ type: 4, data: { content: msg, flags: 64 } });
+        }
 
-          return res.status(200).json({
-            type: 4,
-            data: { content: `Logs channel set to <#${channelId}>`, flags: 64 },
-          });
+        if (sub === 'employee') {
+          const o = options[0].options || [];
+          const u = o.find(x => x.name === 'user')?.value;
+          const c = o.find(x => x.name === 'channel')?.value;
+          const msg = await linkEmployee(guildId, u, c);
+          return res.status(200).json({ type: 4, data: { content: msg, flags: 64 } });
         }
 
         if (sub === 'admin-roles') {
@@ -220,7 +221,95 @@ export default async function handler(req, res) {
         });
       }
 
-      if (customId === 'admin_set_employee') {
+      if (customId === 'admin_set_employee' || customId === 'admin_set_logs') {
+        if (!(await canAdmin(interaction))) {
+          return res.status(200).json({ type: 4, data: { content: 'No permission.', flags: 64 } });
+        }
+        const isEmp = customId === 'admin_set_employee';
+        const channelPicker = {
+          type: 18,
+          label: isEmp ? 'Their sales channel' : 'Logs channel',
+          component: {
+            type: 8,
+            custom_id: 'channel',
+            channel_types: [0],
+            min_values: 1,
+            max_values: 1,
+            required: true,
+            placeholder: 'Search for a channel',
+          },
+        };
+        const userPicker = {
+          type: 18,
+          label: 'Employee',
+          component: {
+            type: 5,
+            custom_id: 'user',
+            min_values: 1,
+            max_values: 1,
+            required: true,
+            placeholder: 'Search for a user',
+          },
+        };
+        return res.status(200).json({
+          type: 9,
+          data: {
+            custom_id: isEmp ? 'modal_emp_pick' : 'modal_logs_pick',
+            title: isEmp ? 'Set Employee' : 'Set Logs Channel',
+            components: isEmp ? [userPicker, channelPicker] : [channelPicker],
+          },
+        });
+      }
+
+      if (customId.startsWith('logpanel_open_')) {
+        const target = customId.replace('logpanel_open_', '');
+        if (userId !== target) {
+          return res.status(200).json({ type: 4, data: { content: 'This is not your panel.', flags: 64 } });
+        }
+        const { data: items } = await supabase
+          .from('craftable_items')
+          .select('id, name, emoji')
+          .eq('guild_id', guildId)
+          .eq('active', true)
+          .order('name')
+          .limit(25);
+        if (!items?.length) {
+          return res.status(200).json({
+            type: 4,
+            data: { content: 'No items yet. An admin can add some with `/items add`.', flags: 64 },
+          });
+        }
+        return res.status(200).json({
+          type: 9,
+          data: {
+            custom_id: `modal_logitem_${userId}`,
+            title: 'Log Crafted Items',
+            components: [
+              {
+                type: 18,
+                label: 'Item',
+                component: {
+                  type: 3,
+                  custom_id: 'item',
+                  required: true,
+                  placeholder: 'Pick an item',
+                  options: items.map(i => ({
+                    label: `${i.emoji && !i.emoji.startsWith('<') ? i.emoji + ' ' : ''}${i.name}`.slice(0, 100),
+                    value: String(i.id),
+                  })),
+                },
+              },
+              {
+                type: 18,
+                label: 'How many did you craft?',
+                component: { type: 4, custom_id: 'quantity', style: 1, required: true, placeholder: 'e.g. 25' },
+              },
+            ],
+          },
+        });
+      }
+
+      if (customId === 'admin_set_employee_legacy') {
         if (!(await isAdmin(memberRoles, guildId))) {
           return res.status(200).json({
             type: 4,
@@ -340,12 +429,70 @@ export default async function handler(req, res) {
 
       const getField = (id) => {
         for (const row of fields) {
-          for (const c of row.components) {
-            if (c.custom_id === id) return c.value;
+          const cs = row.component ? [row.component] : (row.components || []);
+          for (const c of cs) {
+            if (c.custom_id === id) return c.value ?? (c.values ? c.values[0] : null);
           }
         }
         return null;
       };
+
+      if (customId === 'modal_emp_pick' || customId === 'modal_logs_pick') {
+        if (!(await canAdmin(interaction))) {
+          return res.status(200).json({ type: 4, data: { content: 'No permission.', flags: 64 } });
+        }
+        const channelId = getField('channel');
+        const msg = customId === 'modal_emp_pick'
+          ? await linkEmployee(guildId, getField('user'), channelId)
+          : await setLogsChannel(guildId, channelId);
+        return res.status(200).json({ type: 4, data: { content: msg, flags: 64 } });
+      }
+
+      if (customId.startsWith('modal_logitem_')) {
+        const targetUser = customId.replace('modal_logitem_', '');
+        if (userId !== targetUser) {
+          return res.status(200).json({ type: 4, data: { content: 'Not your log.', flags: 64 } });
+        }
+        const itemId = getField('item');
+        const quantity = parseInt(getField('quantity'), 10);
+        if (isNaN(quantity) || quantity < 1) {
+          return res.status(200).json({ type: 4, data: { content: 'Invalid quantity.', flags: 64 } });
+        }
+        const { data: item } = await supabase
+          .from('craftable_items')
+          .select('name, emoji')
+          .eq('id', itemId)
+          .single();
+        if (!item) {
+          return res.status(200).json({ type: 4, data: { content: 'Item not found.', flags: 64 } });
+        }
+        const weekStart = getWeekStart();
+        await supabase.from('crafting_logs').insert({
+          guild_id: guildId,
+          user_id: userId,
+          item_id: itemId,
+          item_name: item.name,
+          quantity,
+          week_start: weekStart,
+          logged_by: userId,
+        });
+        const newTotal = await getEmployeeWeeklyTotal(guildId, userId, weekStart);
+        const cfg = await getOrCreateGuildConfig(guildId);
+        if (cfg.logs_channel_id) {
+          discordPost(cfg.logs_channel_id, {
+            embeds: [{
+              color: 0xFF69B4,
+              description: `<@${userId}> logged **${quantity}x ${item.name}** — weekly total **${newTotal}**`,
+              timestamp: new Date().toISOString(),
+            }],
+            allowed_mentions: { parse: [] },
+          }).catch(e => console.error('log post failed', e.message));
+        }
+        return res.status(200).json({
+          type: 4,
+          data: { content: `Logged **${quantity}x ${item.name}**. Your weekly total is now **${newTotal}**.`, flags: 64 },
+        });
+      }
 
       if (customId === 'modal_set_employee') {
         const userInput = getField('user_id') || '';
@@ -501,10 +648,81 @@ async function buildAdminPanel(guildId) {
     type: 1,
     components: [
       { type: 2, custom_id: 'admin_set_employee', label: 'Set Employee', style: 1, emoji: { name: '👤' } },
+      { type: 2, custom_id: 'admin_set_logs', label: 'Set Logs Channel', style: 1, emoji: { name: '📜' } },
       { type: 2, custom_id: 'admin_pay_all', label: 'Run Pay Check', style: 3, emoji: { name: '💰' } },
       { type: 2, custom_id: 'admin_refresh', label: 'Refresh', style: 2, emoji: { name: '🔄' } },
     ],
   }];
 
   return { embeds: [embed], components };
+}
+
+// ---------- helpers ----------
+
+async function canAdmin(interaction) {
+  const perms = BigInt(interaction.member?.permissions || '0');
+  if ((perms & 0x8n) !== 0n || (perms & 0x20n) !== 0n) return true; // Administrator | Manage Server
+  return isAdmin(interaction.member?.roles || [], interaction.guild_id);
+}
+
+async function discordPost(channelId, body) {
+  const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bot ${process.env.DISCORD_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Discord ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+function buildLogPanel(userId) {
+  return {
+    content: `<@${userId}>`,
+    embeds: [{
+      title: '🍬 Candy Shop — Log Your Crafts',
+      color: 0xFF69B4,
+      description: 'Click **Log Items**, pick what you crafted, and enter how many.\nThis panel is just for you.',
+    }],
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, custom_id: `logpanel_open_${userId}`, label: 'Log Items', style: 3, emoji: { name: '🍬' } },
+      ],
+    }],
+  };
+}
+
+async function linkEmployee(guildId, userId, channelId) {
+  if (!userId || !channelId) return 'Pick both a user and a channel.';
+  await getOrCreateGuildConfig(guildId);
+  await supabase.from('employees').upsert(
+    { guild_id: guildId, user_id: userId, sales_channel_id: channelId, active: true },
+    { onConflict: 'guild_id,user_id' }
+  );
+  try {
+    await discordPost(channelId, buildLogPanel(userId));
+    return `✅ <@${userId}> linked to <#${channelId}> and the logging panel was sent there.`;
+  } catch (e) {
+    console.error('panel post failed', e.message);
+    return `<@${userId}> linked to <#${channelId}>, but I couldn't post the panel. Give the bot View Channel, Send Messages and Embed Links there, then set it again.`;
+  }
+}
+
+async function setLogsChannel(guildId, channelId) {
+  if (!channelId) return 'Pick a channel.';
+  await getOrCreateGuildConfig(guildId);
+  await supabase
+    .from('guild_config')
+    .update({ logs_channel_id: channelId, updated_at: new Date().toISOString() })
+    .eq('guild_id', guildId);
+  try {
+    await discordPost(channelId, await buildAdminPanel(guildId));
+    return `✅ Logs channel set to <#${channelId}> and the panel was sent there.`;
+  } catch (e) {
+    console.error('panel post failed', e.message);
+    return `Logs channel set to <#${channelId}>, but I couldn't post the panel. Give the bot View Channel, Send Messages and Embed Links there, then set it again.`;
+  }
 }
