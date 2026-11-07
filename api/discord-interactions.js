@@ -955,6 +955,9 @@ const DEFAULT_ITEMS = [
   { name: 'Bricked Up Shot', emoji: '🥃', box_only: true },
   { name: 'Lus Naughty N…', emoji: '🍹', box_only: true },
   { name: 'Midnight Hazy…', emoji: '🍹', box_only: true },
+  { name: 'Strawberry C…', emoji: '🍹' },
+  { name: 'Cinnamon Myx…', emoji: '🍹' },
+  { name: 'Cowbell Crun…', emoji: '🍹' },
   { name: 'Boxes', emoji: '📦' },
 ];
 
