@@ -26,6 +26,28 @@ const commands = [
         ],
       },
       {
+        name: 'settings',
+        description: 'View or change quota, pay and how boxes/drinks count',
+        type: 1,
+        options: [
+          { name: 'quota', description: 'Items needed per pay period', type: 4, required: false, min_value: 1 },
+          { name: 'base-pay', description: 'Pay when quota is reached', type: 4, required: false, min_value: 0 },
+          { name: 'bonus-pay', description: 'Pay when they go over quota', type: 4, required: false, min_value: 0 },
+          { name: 'close-range', description: 'How far under quota still counts as "close"', type: 4, required: false, min_value: 0 },
+          {
+            name: 'count-mode',
+            description: 'What counts toward quota',
+            type: 3,
+            required: false,
+            choices: [
+              { name: 'Everything (boxes + drinks)', value: 'all' },
+              { name: 'Boxes only', value: 'boxes_only' },
+              { name: 'Drinks only (not the boxes)', value: 'drinks_only' },
+            ],
+          },
+        ],
+      },
+      {
         name: 'employee',
         description: 'Link an employee to their sales channel and send them the logging panel',
         type: 1,

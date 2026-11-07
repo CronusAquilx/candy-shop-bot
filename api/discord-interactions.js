@@ -110,6 +110,38 @@ export default async function handler(req, res) {
           return res.status(200).json({ type: 4, data: { content: msg, flags: 64 } });
         }
 
+        if (sub === 'settings') {
+          const o = options[0].options || [];
+          const get = n => o.find(x => x.name === n)?.value;
+          const update = {};
+          if (get('quota') !== undefined) update.quota_amount = get('quota');
+          if (get('base-pay') !== undefined) update.pay_base = get('base-pay');
+          if (get('bonus-pay') !== undefined) update.pay_bonus = get('bonus-pay');
+          if (get('close-range') !== undefined) update.close_threshold = get('close-range');
+          if (get('count-mode') !== undefined) update.quota_mode = get('count-mode');
+          if (Object.keys(update).length) {
+            await supabase
+              .from('guild_config')
+              .update({ ...update, updated_at: new Date().toISOString() })
+              .eq('guild_id', guildId);
+          }
+          const c = await getOrCreateGuildConfig(guildId);
+          const modeText = { all: 'Everything (boxes + drinks)', boxes_only: 'Boxes only', drinks_only: 'Drinks only (not the boxes)' }[c.quota_mode || 'all'];
+          return res.status(200).json({
+            type: 4,
+            data: {
+              content:
+                `${Object.keys(update).length ? '✅ Settings updated.' : 'Current settings:'}\n` +
+                `Quota: **${c.quota_amount}** items\n` +
+                `Base pay: **${formatMoney(c.pay_base)}** | Bonus pay: **${formatMoney(c.pay_bonus)}**\n` +
+                `"Close" range: **${c.close_threshold}** under quota\n` +
+                `Counts toward quota: **${modeText}**\n` +
+                `_Count mode applies to logs from now on._`,
+              flags: 64,
+            },
+          });
+        }
+
         if (sub === 'employee') {
           const o = options[0].options || [];
           const u = o.find(x => x.name === 'user')?.value;
@@ -260,6 +292,44 @@ export default async function handler(req, res) {
             custom_id: isEmp ? 'modal_emp_pick' : 'modal_logs_pick',
             title: isEmp ? 'Set Employee' : 'Set Logs Channel',
             components: isEmp ? [userPicker, channelPicker] : [channelPicker],
+          },
+        });
+      }
+
+      if (customId.startsWith('deny_')) {
+        if (!(await canAdmin(interaction))) {
+          return res.status(200).json({ type: 4, data: { content: 'Only admins can deny logs.', flags: 64 } });
+        }
+        const batch = customId.replace('deny_', '');
+        const { data: voided } = await supabase
+          .from('crafting_logs')
+          .update({ counts_toward_quota: false, voided_at: new Date().toISOString() })
+          .eq('log_batch', batch)
+          .is('paid_at', null)
+          .is('voided_at', null)
+          .select('id');
+        if (!voided?.length) {
+          return res.status(200).json({
+            type: 4,
+            data: { content: 'This log was already denied or already paid out.', flags: 64 },
+          });
+        }
+        const msg = interaction.message;
+        const embed = { ...(msg.embeds?.[0] || {}) };
+        embed.color = 0xED4245;
+        embed.title = '🚫 Log Denied';
+        embed.fields = [
+          ...(embed.fields || []),
+          { name: 'Denied', value: `By <@${userId}>. This log no longer counts toward quota.` },
+        ];
+        const again = msg.components?.[0]?.components?.find(c => c.custom_id?.startsWith('logpanel_open_'));
+        return res.status(200).json({
+          type: 7,
+          data: {
+            embeds: [embed],
+            components: again
+              ? [{ type: 1, components: [{ type: 2, custom_id: again.custom_id, label: again.label, style: again.style, emoji: again.emoji }] }]
+              : [],
           },
         });
       }
@@ -603,6 +673,8 @@ export default async function handler(req, res) {
           return res.status(200).json({ type: 4, data: { content: 'Item not found.', flags: 64 } });
         }
         const weekStart = getWeekStart();
+        const batchId = crypto.randomUUID();
+        const mode = (await getOrCreateGuildConfig(guildId)).quota_mode || 'all';
         const inserts = [{ id: boxItemId, qty: boxes }, ...pairs.map(p => ({ id: p[0], qty: parseInt(p[1], 10) }))]
           .filter(x => byId[x.id] && x.qty > 0)
           .map(x => ({
@@ -613,6 +685,8 @@ export default async function handler(req, res) {
             quantity: x.qty,
             week_start: weekStart,
             logged_by: userId,
+            log_batch: batchId,
+            counts_toward_quota: x.id === boxItemId ? mode !== 'drinks_only' : mode !== 'boxes_only',
           }));
         await supabase.from('crafting_logs').insert(inserts);
 
@@ -637,6 +711,7 @@ export default async function handler(req, res) {
             item: boxItem,
             quantity: boxes,
             lines,
+            batchId,
             total: newTotal,
             quota: cfg.quota_amount || 600,
             channelId: emp?.sales_channel_id || interaction.channel_id,
@@ -672,6 +747,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ type: 4, data: { content: 'Item not found.', flags: 64 } });
         }
         const weekStart = getWeekStart();
+        const batchId = crypto.randomUUID();
         await supabase.from('crafting_logs').insert({
           guild_id: guildId,
           user_id: userId,
@@ -680,6 +756,7 @@ export default async function handler(req, res) {
           quantity,
           week_start: weekStart,
           logged_by: userId,
+          log_batch: batchId,
         });
         const newTotal = await getEmployeeWeeklyTotal(guildId, userId, weekStart);
         const cfg = await getOrCreateGuildConfig(guildId);
@@ -698,6 +775,7 @@ export default async function handler(req, res) {
             userId,
             item,
             quantity,
+            batchId,
             total: newTotal,
             quota: cfg.quota_amount || 600,
             channelId: emp?.sales_channel_id || interaction.channel_id,
@@ -974,7 +1052,7 @@ async function ensureDefaultItems(guildId) {
   );
 }
 
-async function announceLog({ userId, item, quantity, lines = null, total, quota, channelId, logsChannelId, shots }) {
+async function announceLog({ userId, item, quantity, lines = null, batchId = null, total, quota, channelId, logsChannelId, shots }) {
   const left = quota - total;
   const progress = left <= 0
     ? `✅ Quota reached! (**${total}/${quota}**)`
@@ -993,6 +1071,7 @@ async function announceLog({ userId, item, quantity, lines = null, total, quota,
     type: 1,
     components: [
       { type: 2, custom_id: `logpanel_open_${userId}`, label: 'Log Items Again', style: 3, emoji: { name: '🍬' } },
+      ...(batchId ? [{ type: 2, custom_id: `deny_${batchId}`, label: 'Deny', style: 4, emoji: { name: '🚫' } }] : []),
     ],
   }];
 
