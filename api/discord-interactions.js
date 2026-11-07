@@ -275,6 +275,7 @@ export default async function handler(req, res) {
           .select('id, name, emoji')
           .eq('guild_id', guildId)
           .eq('active', true)
+          .eq('box_only', false)
           .order('name')
           .limit(25);
         if (!items?.length) {
@@ -284,25 +285,79 @@ export default async function handler(req, res) {
           });
         }
         return res.status(200).json({
+          type: 4,
+          data: {
+            content: 'What did you craft?',
+            flags: 64,
+            components: [{
+              type: 1,
+              components: [{
+                type: 3,
+                custom_id: `logpick_${userId}`,
+                placeholder: 'Pick an item',
+                options: items.map(i => ({
+                  label: `${itemEmoji(i)}${i.name}`.slice(0, 100),
+                  value: String(i.id),
+                })),
+              }],
+            }],
+          },
+        });
+      }
+
+      if (customId.startsWith('logpick_')) {
+        const target = customId.replace('logpick_', '');
+        if (userId !== target) {
+          return res.status(200).json({ type: 4, data: { content: 'This is not your panel.', flags: 64 } });
+        }
+        const itemId = interaction.data.values[0];
+        const { data: item } = await supabase
+          .from('craftable_items')
+          .select('id, name, emoji')
+          .eq('id', itemId)
+          .single();
+        if (!item) {
+          return res.status(200).json({ type: 4, data: { content: 'Item not found.', flags: 64 } });
+        }
+
+        // Boxes expands into the drinks that went in them
+        if (item.name.toLowerCase() === 'boxes') {
+          const { data: drinks } = await supabase
+            .from('craftable_items')
+            .select('id, name, emoji')
+            .eq('guild_id', guildId)
+            .eq('active', true)
+            .eq('box_only', true)
+            .order('name')
+            .limit(4);
+          return res.status(200).json({
+            type: 9,
+            data: {
+              custom_id: `modal_bxA_${userId}_${item.id}`,
+              title: 'Log Boxes',
+              components: [
+                {
+                  type: 18,
+                  label: 'How many boxes?',
+                  component: { type: 4, custom_id: 'boxes', style: 1, required: true, placeholder: 'e.g. 20' },
+                },
+                ...(drinks || []).map(d => ({
+                  type: 18,
+                  label: `${itemEmoji(d)}${d.name}`.slice(0, 45),
+                  description: 'How many of this drink were made (blank = 0)',
+                  component: { type: 4, custom_id: `d_${d.id}`, style: 1, required: false, placeholder: '0' },
+                })),
+              ],
+            },
+          });
+        }
+
+        return res.status(200).json({
           type: 9,
           data: {
-            custom_id: `modal_logitem_${userId}`,
-            title: 'Log Crafted Items',
+            custom_id: `modal_logitem_${userId}_${item.id}`,
+            title: `Log ${item.name}`.slice(0, 45),
             components: [
-              {
-                type: 18,
-                label: 'Item',
-                component: {
-                  type: 3,
-                  custom_id: 'item',
-                  required: true,
-                  placeholder: 'Pick an item',
-                  options: items.map(i => ({
-                    label: `${i.emoji && !i.emoji.startsWith('<') ? i.emoji + ' ' : ''}${i.name}`.slice(0, 100),
-                    value: String(i.id),
-                  })),
-                },
-              },
               {
                 type: 18,
                 label: 'How many did you craft?',
@@ -315,6 +370,26 @@ export default async function handler(req, res) {
                 component: { type: 19, custom_id: 'shots', min_values: 1, max_values: 3, required: true },
               },
             ],
+          },
+        });
+      }
+
+      if (customId.startsWith('bxshots_')) {
+        const rest = customId.replace('bxshots_', '');
+        if (userId !== rest.split('_')[0]) {
+          return res.status(200).json({ type: 4, data: { content: 'This is not your log.', flags: 64 } });
+        }
+        return res.status(200).json({
+          type: 9,
+          data: {
+            custom_id: `modal_bxB_${rest}`,
+            title: 'Upload Screenshots',
+            components: [{
+              type: 18,
+              label: 'Screenshots (1-3)',
+              description: 'Upload 1 to 3 screenshots of what you crafted',
+              component: { type: 19, custom_id: 'shots', min_values: 1, max_values: 3, required: true },
+            }],
           },
         });
       }
@@ -465,12 +540,125 @@ export default async function handler(req, res) {
         return res.status(200).json({ type: 4, data: { content: msg, flags: 64 } });
       }
 
-      if (customId.startsWith('modal_logitem_')) {
-        const targetUser = customId.replace('modal_logitem_', '');
+      if (customId.startsWith('modal_bxA_')) {
+        const [targetUser, boxItemId] = customId.replace('modal_bxA_', '').split('_');
         if (userId !== targetUser) {
           return res.status(200).json({ type: 4, data: { content: 'Not your log.', flags: 64 } });
         }
-        const itemId = getField('item');
+        const boxes = parseInt(getField('boxes'), 10);
+        if (isNaN(boxes) || boxes < 1) {
+          return res.status(200).json({ type: 4, data: { content: 'Enter how many boxes you made.', flags: 64 } });
+        }
+        const pairs = [];
+        for (const row of fields) {
+          const c = row.component || row.components?.[0];
+          if (!c?.custom_id?.startsWith('d_')) continue;
+          const q = parseInt(c.value, 10);
+          if (!isNaN(q) && q > 0) pairs.push(`${c.custom_id.slice(2)}.${q}`);
+        }
+        const encoded = pairs.join('-') || 'none';
+        const { data: names } = await supabase
+          .from('craftable_items')
+          .select('id, name, emoji')
+          .in('id', pairs.map(x => x.split('.')[0]));
+        const lines = pairs.map(x => {
+          const [id, q] = x.split('.');
+          const d = names?.find(n => String(n.id) === id);
+          return `${itemEmoji(d || {})}${d?.name || 'Drink'} — **${q}x**`;
+        });
+        return res.status(200).json({
+          type: 4,
+          data: {
+            content: `📦 **${boxes}x Boxes**\n${lines.join('\n') || '*No drinks entered*'}\n\nLast step: upload your screenshots.`,
+            flags: 64,
+            components: [{
+              type: 1,
+              components: [{
+                type: 2,
+                custom_id: `bxshots_${userId}_${boxItemId}_${boxes}_${encoded}`,
+                label: 'Upload screenshots',
+                style: 3,
+                emoji: { name: '📸' },
+              }],
+            }],
+          },
+        });
+      }
+
+      if (customId.startsWith('modal_bxB_')) {
+        const [targetUser, boxItemId, boxesStr, encoded] = customId.replace('modal_bxB_', '').split('_');
+        if (userId !== targetUser) {
+          return res.status(200).json({ type: 4, data: { content: 'Not your log.', flags: 64 } });
+        }
+        const boxes = parseInt(boxesStr, 10);
+        const pairs = encoded === 'none' ? [] : encoded.split('-').map(x => x.split('.'));
+        const ids = [boxItemId, ...pairs.map(p => p[0])];
+        const { data: rows } = await supabase
+          .from('craftable_items')
+          .select('id, name, emoji')
+          .in('id', ids);
+        const byId = Object.fromEntries((rows || []).map(r => [String(r.id), r]));
+        const boxItem = byId[boxItemId];
+        if (!boxItem) {
+          return res.status(200).json({ type: 4, data: { content: 'Item not found.', flags: 64 } });
+        }
+        const weekStart = getWeekStart();
+        const inserts = [{ id: boxItemId, qty: boxes }, ...pairs.map(p => ({ id: p[0], qty: parseInt(p[1], 10) }))]
+          .filter(x => byId[x.id] && x.qty > 0)
+          .map(x => ({
+            guild_id: guildId,
+            user_id: userId,
+            item_id: x.id,
+            item_name: byId[x.id].name,
+            quantity: x.qty,
+            week_start: weekStart,
+            logged_by: userId,
+          }));
+        await supabase.from('crafting_logs').insert(inserts);
+
+        const newTotal = await getEmployeeWeeklyTotal(guildId, userId, weekStart);
+        const cfg = await getOrCreateGuildConfig(guildId);
+        const { data: emp } = await supabase
+          .from('employees')
+          .select('sales_channel_id')
+          .eq('guild_id', guildId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        const resolved = interaction.data.resolved?.attachments || {};
+        const shots = getValues('shots').map(id => resolved[id]).filter(Boolean).slice(0, 3);
+        const lines = [
+          `📦 **${boxes}x Boxes**`,
+          ...pairs.map(p => `↳ ${itemEmoji(byId[p[0]] || {})}${byId[p[0]]?.name || 'Drink'} — **${p[1]}x**`),
+        ];
+
+        waitUntil(
+          announceLog({
+            userId,
+            item: boxItem,
+            quantity: boxes,
+            lines,
+            total: newTotal,
+            quota: cfg.quota_amount || 600,
+            channelId: emp?.sales_channel_id || interaction.channel_id,
+            logsChannelId: cfg.logs_channel_id,
+            shots,
+          }).catch(e => console.error('announce failed', e.message))
+        );
+
+        return res.status(200).json({
+          type: 4,
+          data: {
+            content: `Logged **${boxes}x Boxes** and their drinks. Your total is now **${newTotal}**. Posting it to your sales channel.`,
+            flags: 64,
+          },
+        });
+      }
+
+      if (customId.startsWith('modal_logitem_')) {
+        const [targetUser, itemId] = customId.replace('modal_logitem_', '').split('_');
+        if (userId !== targetUser) {
+          return res.status(200).json({ type: 4, data: { content: 'Not your log.', flags: 64 } });
+        }
         const quantity = parseInt(getField('quantity'), 10);
         if (isNaN(quantity) || quantity < 1) {
           return res.status(200).json({ type: 4, data: { content: 'Invalid quantity.', flags: 64 } });
@@ -763,10 +951,10 @@ async function setLogsChannel(guildId, channelId) {
 }
 
 const DEFAULT_ITEMS = [
-  { name: 'Phoenix BJ Shot', emoji: '🥃' },
-  { name: 'Bricked Up Shot', emoji: '🥃' },
-  { name: 'Lus Naughty N…', emoji: '🍹' },
-  { name: 'Midnight Hazy…', emoji: '🍹' },
+  { name: 'Phoenix BJ Shot', emoji: '🥃', box_only: true },
+  { name: 'Bricked Up Shot', emoji: '🥃', box_only: true },
+  { name: 'Lus Naughty N…', emoji: '🍹', box_only: true },
+  { name: 'Midnight Hazy…', emoji: '🍹', box_only: true },
   { name: 'Boxes', emoji: '📦' },
 ];
 
@@ -778,12 +966,12 @@ async function ensureDefaultItems(guildId) {
     .eq('guild_id', guildId);
   if (count > 0) return;
   await supabase.from('craftable_items').upsert(
-    DEFAULT_ITEMS.map(i => ({ guild_id: guildId, name: i.name, emoji: i.emoji, active: true })),
+    DEFAULT_ITEMS.map(i => ({ guild_id: guildId, name: i.name, emoji: i.emoji, active: true, box_only: !!i.box_only })),
     { onConflict: 'guild_id,name' }
   );
 }
 
-async function announceLog({ userId, item, quantity, total, quota, channelId, logsChannelId, shots }) {
+async function announceLog({ userId, item, quantity, lines = null, total, quota, channelId, logsChannelId, shots }) {
   const left = quota - total;
   const progress = left <= 0
     ? `✅ Quota reached! (**${total}/${quota}**)`
@@ -791,7 +979,9 @@ async function announceLog({ userId, item, quantity, total, quota, channelId, lo
   const embed = {
     title: '🍬 Crafting Logged',
     color: 0xFF69B4,
-    description: `<@${userId}> crafted **${quantity}x ${item.emoji && !item.emoji.startsWith('<') ? item.emoji + ' ' : ''}${item.name}**`,
+    description: lines
+      ? `<@${userId}> crafted:\n${lines.join('\n')}`
+      : `<@${userId}> crafted **${quantity}x ${itemEmoji(item)}${item.name}**`,
     fields: [{ name: 'Progress', value: progress }],
     footer: { text: 'Click below to log more' },
     timestamp: new Date().toISOString(),
@@ -833,10 +1023,14 @@ async function announceLog({ userId, item, quantity, total, quota, channelId, lo
     await discordPost(logsChannelId, {
       embeds: [{
         color: 0xFF69B4,
-        description: `<@${userId}> logged **${quantity}x ${item.name}** — total **${total}/${quota}**`,
+        description: `<@${userId}> logged ${lines ? `**${quantity}x ${item.name}** (with drinks)` : `**${quantity}x ${item.name}**`} — total **${total}/${quota}**`,
         timestamp: new Date().toISOString(),
       }],
       allowed_mentions: { parse: [] },
     }).catch(e => console.error('logs post failed', e.message));
   }
+}
+
+function itemEmoji(i) {
+  return i?.emoji && !i.emoji.startsWith('<') ? i.emoji + ' ' : '';
 }
